@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "951307594838",
+    "project_id": "jamale-56944",
+    "storage_bucket": "jamale-56944.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:951307594838:android:9755ddc41c4c2f97335ff7",
+        "android_client_info": {
+          "package_name": "com.example.motor_service_billing_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJnwHyg5kkyL5cmzh5tHnXv3Pz-Hoqz-g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
