@@ -5,31 +5,20 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:motor_service_billing_app/firebase_options.dart'; // Ensure this file is correctly generated
-import 'package:motor_service_billing_app/screens/table_selection_screen.dart';
+import 'package:motor_service_billing_app/screens/login_screen.dart'; // Import your new LoginScreen
 import 'package:motor_service_billing_app/services/firestore_service.dart';
-import 'package:motor_service_billing_app/utils/app_constants.dart'; // Import AppConstants (though not directly used in FirestoreService init now)
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase using options from AppConstants
+  // Initialize Firebase using options from DefaultFirebaseOptions.currentPlatform
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Authenticate user anonymously to get a userId
-  FirebaseAuth auth = FirebaseAuth.instance;
-  UserCredential userCredential = await auth.signInAnonymously();
-  String userId = userCredential.user?.uid ?? 'default_user_id';
-  print("Authenticated as user: $userId");
-
   runApp(
     MultiProvider(
       providers: [
-        // Provide FirebaseFirestore instance (if other parts of your app need direct access)
-        Provider<FirebaseFirestore>.value(value: FirebaseFirestore.instance),
-        // Provide userId (if other parts of your app need direct access)
-        Provider<String>.value(value: userId),
         // Provide FirestoreService: It initializes its own Firebase instances internally,
         // so no arguments are passed here.
         Provider<FirestoreService>(
@@ -94,7 +83,7 @@ class _MotorServiceBillingAppState extends State<MotorServiceBillingApp> {
           foregroundColor: Colors.white,
         ),
       ),
-      home: const TableSelectionScreen(),
+      home: const LoginScreen(), // Set LoginScreen as the initial screen
     );
   }
 }

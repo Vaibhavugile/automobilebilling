@@ -1,4 +1,3 @@
-//
 // lib/services/firestore_service.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -8,6 +7,24 @@ import 'package:motor_service_billing_app/models/service_item.dart';
 class FirestoreService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  // --- Authentication ---
+  Future<void> signInWithEmailPassword(String email, String password) async {
+    try {
+      await _auth.signInWithEmailAndPassword(email: email, password: password);
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'user-not-found') {
+        throw Exception('No user found for that email.');
+      } else if (e.code == 'wrong-password') {
+        throw Exception('Wrong password provided for that user.');
+      } else {
+        // You might want to log this error or show a more generic message
+        throw Exception('Login failed: ${e.message}');
+      }
+    } catch (e) {
+      throw Exception('An unexpected error occurred during login: $e');
+    }
+  }
 
   // --- User and Initialization ---
   Future<String?> getCurrentUserId() async {
@@ -162,14 +179,10 @@ class FirestoreService {
     final userId = await getCurrentUserId();
     if (userId == null) return;
 
-    // If item type changed, it's essentially a delete and re-add in the correct collection/status
-    // For now, assuming we update the existing document in 'services_products' collection
-    // If you plan to separate services and products into different collections, this logic needs adjustment.
     await _db.collection('users').doc(userId).collection('services_products').doc(itemId).update({
       'description': description,
       'unitPrice': unitPrice,
       'isProduct': isProduct,
-      // No need to recalculate total here for master list, only for bill items
     });
   }
 
