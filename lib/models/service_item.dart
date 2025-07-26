@@ -1,12 +1,13 @@
-
+// lib/models/service_item.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ServiceItem {
-  String? id; // Nullable for new items
+  String? id; // Nullable for new items and for items within a bill
   String description;
-  int quantity;
+  int quantity; // Changed back to int as requested
   double unitPrice;
-  double total;
+  double total; // This will be calculated
+
   bool isProduct; // True for products, false for services
 
   ServiceItem({
@@ -17,7 +18,7 @@ class ServiceItem {
     this.isProduct = false,
   }) : total = quantity * unitPrice; // Initialize total in constructor
 
-  // Method to recalculate total
+  // Method to recalculate total (can be called internally or externally)
   void calculateTotal() {
     total = quantity * unitPrice;
   }
@@ -25,10 +26,10 @@ class ServiceItem {
   // Factory constructor to create a ServiceItem from a Map (e.g., from Firestore)
   factory ServiceItem.fromMap(Map<String, dynamic> map) {
     return ServiceItem(
-      id: map['id'], // ID might not be present for items within a bill
+      id: map['id'], // ID might be present for items within a bill
       description: map['description'] ?? '',
-      quantity: map['quantity'] ?? 0,
-      unitPrice: (map['unitPrice'] ?? 0.0).toDouble(),
+      quantity: (map['quantity'] as num?)?.toInt() ?? 0, // Cast to int
+      unitPrice: (map['unitPrice'] as num?)?.toDouble() ?? 0.0,
       isProduct: map['isProduct'] ?? false,
     )..calculateTotal(); // Calculate total after creation
   }
@@ -43,6 +44,27 @@ class ServiceItem {
       'total': total, // Store calculated total
       'isProduct': isProduct,
     };
+  }
+
+  // ADD THIS: copyWith method for immutability and easy updates
+  ServiceItem copyWith({
+    String? id,
+    String? description,
+    int? quantity, // Changed to int
+    double? unitPrice,
+    bool? isProduct,
+  }) {
+    // Create a new ServiceItem instance with updated values
+    final newItem = ServiceItem(
+      id: id ?? this.id,
+      description: description ?? this.description,
+      quantity: quantity ?? this.quantity,
+      unitPrice: unitPrice ?? this.unitPrice,
+      isProduct: isProduct ?? this.isProduct,
+    );
+    // Ensure the total is recalculated for the new item
+    newItem.calculateTotal();
+    return newItem;
   }
 
   // For Autocomplete display

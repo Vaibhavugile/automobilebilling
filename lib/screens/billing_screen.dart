@@ -8,10 +8,11 @@ import 'dart:typed_data'; // For Uint8List
 
 import 'package:motor_service_billing_app/models/bill.dart';
 import 'package:motor_service_billing_app/models/service_item.dart';
+import 'package:motor_service_billing_app/models/customer.dart'; // Import the Customer model
 import 'package:motor_service_billing_app/services/firestore_service.dart';
 import 'package:motor_service_billing_app/screens/custom_message_box.dart';
 // Removed: import 'package:motor_service_billing_app/screens/service_product_management_screen.dart'; // No longer navigated from here
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // Corrected import to directly use the package
 import 'package:motor_service_billing_app/utils/extensions.dart'; // Import the new extensions file
 import 'package:url_launcher/url_launcher.dart'; // Add this line
 class BillingScreen extends StatefulWidget {
@@ -31,6 +32,8 @@ class _BillingScreenState extends State<BillingScreen> {
   List<ServiceItem> _allAvailableServices = []; // For autocomplete
   Map<String, ServiceItem> _serviceProductMap = {}; // Map for quick lookup
 
+  Customer? _selectedCustomer; // To hold the selected customer
+
   // ScrollController for the entire SingleChildScrollView
   final ScrollController _overallScrollController = ScrollController();
 
@@ -38,27 +41,27 @@ class _BillingScreenState extends State<BillingScreen> {
   BluetoothCharacteristic? _writeCharacteristic;
 
   Timer? _saveTimer;
+  Timer? _customerSearchTimer; // Timer for debouncing customer search
   final Duration _debounceDuration = const Duration(milliseconds: 700); // Debounce duration
 
   @override
   void initState() {
     super.initState();
     _loadBillData();
-    _discountController.addListener(_updateDiscount); // This already calls setState, which affects _discountPercentage.
-    // _debounceSaveBill is added directly to the controller below.
+    _discountController.addListener(_updateDiscount);
     _loadAvailableServices();
 
     // Add listeners to controllers to trigger debounced save
-    _mobileNumberController.addListener(_debounceSaveBill);
-    _numberPlateController.addListener(_debounceSaveBill);
+    _mobileNumberController.addListener(_onCustomerDetailChanged); // Use a combined listener
+    _numberPlateController.addListener(_onCustomerDetailChanged); // Use a combined listener
     _discountController.addListener(_debounceSaveBill);
   }
 
   @override
   void dispose() {
     // Remove listeners to prevent memory leaks
-    _mobileNumberController.removeListener(_debounceSaveBill);
-    _numberPlateController.removeListener(_debounceSaveBill);
+    _mobileNumberController.removeListener(_onCustomerDetailChanged); // Remove combined listener
+    _numberPlateController.removeListener(_onCustomerDetailChanged); // Remove combined listener
     _discountController.removeListener(_debounceSaveBill);
 
     _mobileNumberController.dispose();
@@ -67,6 +70,7 @@ class _BillingScreenState extends State<BillingScreen> {
     _overallScrollController.dispose();
 
     _saveTimer?.cancel(); // Cancel any pending save when screen is disposed
+    _customerSearchTimer?.cancel(); // Cancel customer search timer
     super.dispose();
   }
 
@@ -76,6 +80,61 @@ class _BillingScreenState extends State<BillingScreen> {
       _saveBill(); // Schedule new save
     });
   }
+
+  // Combined listener for customer detail changes
+  void _onCustomerDetailChanged() {
+    _debounceSaveBill(); // Also save the bill
+    _debounceCustomerSearch(); // Trigger customer search
+  }
+
+  // Debounce customer search
+  void _debounceCustomerSearch() {
+    _customerSearchTimer?.cancel();
+    _customerSearchTimer = Timer(_debounceDuration, () {
+      _searchAndPopulateCustomer();
+    });
+  }
+
+  // Search for customer and populate fields
+  Future<void> _searchAndPopulateCustomer() async {
+    final firestoreService = Provider.of<FirestoreService>(context, listen: false);
+    Customer? foundCustomer;
+
+    // Prioritize mobile number search if available
+    if (_mobileNumberController.text.isNotEmpty) {
+      foundCustomer = await firestoreService.getCustomerByMobileNumber(_mobileNumberController.text);
+    }
+
+    // If no customer found by mobile, try number plate
+    if (foundCustomer == null && _numberPlateController.text.isNotEmpty) {
+      foundCustomer = await firestoreService.getCustomerByVehicleNumberPlate(_numberPlateController.text);
+    }
+
+    if (foundCustomer != null) {
+      setState(() {
+        _selectedCustomer = foundCustomer; // Set the found customer
+        // Update controllers only if they don't already match to avoid
+        // unnecessary rebuilds or cursor jumps.
+        if (_mobileNumberController.text != foundCustomer!.mobileNumber) {
+          _mobileNumberController.text = foundCustomer.mobileNumber;
+        }
+        // Check if the current number plate is already one of the customer's plates
+        if (!_numberPlateController.text.isNotEmpty || !(foundCustomer.vehicleNumberPlates.contains(_numberPlateController.text))) {
+          // If the current field is empty or doesn't match, try to set an existing plate
+          if (foundCustomer.vehicleNumberPlates.isNotEmpty) {
+            _numberPlateController.text = foundCustomer.vehicleNumberPlates.first;
+          }
+        }
+      });
+      // Optionally show a message if customer found
+      // CustomMessageBox.show(context, "Customer Found", "Customer: ${foundCustomer.name}");
+    } else {
+      setState(() {
+        _selectedCustomer = null; // Clear selected customer if not found
+      });
+    }
+  }
+
 
   Future<void> _saveBill() async {
     final firestoreService = Provider.of<FirestoreService>(context, listen: false);
@@ -87,6 +146,7 @@ class _BillingScreenState extends State<BillingScreen> {
       discountPercentage: _discountPercentage,
       timestamp: DateTime.now(), // Update timestamp on each save for pending bills
       grandTotal: _calculateGrandTotal(), // Calculate grand total for saving
+      customerId: _selectedCustomer?.id, // Include customer ID if available
     );
     try {
       await firestoreService.saveBill(bill);
@@ -147,19 +207,34 @@ class _BillingScreenState extends State<BillingScreen> {
       setState(() {
         _mobileNumberController.text = bill.customerMobile;
         _numberPlateController.text = bill.numberPlate;
+        // Ensure discount percentage is always treated as a double
         _discountController.text = bill.discountPercentage.toStringAsFixed(0);
-        _discountPercentage = bill.discountPercentage;
+        // Cast to double, assuming bill.discountPercentage could be int or dynamic from Firestore
+        _discountPercentage = (bill.discountPercentage as num).toDouble();
         _serviceItems.clear();
         _serviceItems.addAll(bill.serviceItems);
       });
+      // After loading bill data, try to load customer details
+      if (bill.customerId != null) {
+        final customer = await firestoreService.getCustomerById(bill.customerId!);
+        setState(() {
+          _selectedCustomer = customer;
+        });
+      } else if (bill.customerMobile.isNotEmpty) {
+        // If no customer ID, try searching by mobile number (for older bills or new entries)
+        final customer = await firestoreService.getCustomerByMobileNumber(bill.customerMobile);
+        setState(() {
+          _selectedCustomer = customer;
+        });
+      }
     }
   }
 
   void _updateDiscount() {
     setState(() {
       _discountPercentage = double.tryParse(_discountController.text) ?? 0.0;
-      if (_discountPercentage < 0) _discountPercentage = 0;
-      if (_discountPercentage > 100) _discountPercentage = 100;
+      if (_discountPercentage < 0) _discountPercentage = 0.0; // Ensure double
+      if (_discountPercentage > 100) _discountPercentage = 100.0; // Ensure double
     });
     // No explicit _debounceSaveBill() here, as _discountController's listener already calls it.
   }
@@ -204,6 +279,9 @@ class _BillingScreenState extends State<BillingScreen> {
 
   void _updateServiceItemQuantity(int index, int quantity) {
     setState(() {
+      // Assuming ServiceItem.quantity is of type int based on typical quantity usage.
+      // If it's meant to be double, please change the type in your ServiceItem model
+      // and revert this line to: _serviceItems[index].quantity = quantity.toDouble();
       _serviceItems[index].quantity = quantity;
       _serviceItems[index].calculateTotal();
     });
@@ -256,6 +334,7 @@ class _BillingScreenState extends State<BillingScreen> {
           discountPercentage: _discountPercentage,
           timestamp: DateTime.now(),
           grandTotal: _calculateGrandTotal(), // Pass grandTotal
+          customerId: _selectedCustomer?.id, // Pass the selected customer's ID
         );
         await firestoreService.completeBill(bill);
         await _clearBill(silent: true); // Clear the bill after completion
@@ -285,6 +364,7 @@ class _BillingScreenState extends State<BillingScreen> {
         _discountController.clear();
         _discountPercentage = 0.0;
         _serviceItems.clear();
+        _selectedCustomer = null; // Clear selected customer on bill clear
       });
       final firestoreService = Provider.of<FirestoreService>(context, listen: false);
       try {
@@ -375,6 +455,9 @@ class _BillingScreenState extends State<BillingScreen> {
     receipt += "Date: ${DateTime.now().toLocal().toString().split(' ')[0]}\n";
     receipt += "Time: ${DateTime.now().toLocal().toString().split(' ')[1].substring(0, 5)}\n";
     receipt += "---------------------------\n";
+    if (_selectedCustomer != null) { // Include customer name if available
+      receipt += "Customer Name: ${_selectedCustomer!.name}\n";
+    }
     receipt += "Customer Mobile: ${_mobileNumberController.text}\n";
     receipt += "Number Plate: ${_numberPlateController.text}\n";
     receipt += "---------------------------\n";
@@ -395,7 +478,6 @@ class _BillingScreenState extends State<BillingScreen> {
     receipt += "---------------------------\n";
     receipt += "THANK YOU! VISIT AGAIN!\n";
     receipt += "---------------------------\n\n\n"; // Add extra newlines for proper cutting
-
     return receipt;
   }
 
@@ -436,92 +518,103 @@ class _BillingScreenState extends State<BillingScreen> {
                       TextFormField(
                         controller: _mobileNumberController,
                         keyboardType: TextInputType.phone,
-                        decoration: InputDecoration( // REMOVED 'const' HERE
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                          LengthLimitingTextInputFormatter(10),
+                        ],
+                        decoration: InputDecoration( // Removed const
                           labelText: 'Customer Mobile Number',
                           hintText: 'e.g., 9876543210',
-                          prefixIcon: const Icon(Icons.phone), // 'const' can remain here if Icon is constant
-                          border: const OutlineInputBorder(), // 'const' can remain here if OutlineInputBorder is constant
-                          suffixIcon: IconButton( // ADD THIS BLOCK FOR WHATSAPP BUTTON
-                            icon: const Icon(Icons.message, color: Colors.green), // Using Icons.message as Icons.whatsapp doesn't exist
-                            onPressed: () { // This function makes InputDecoration not a constant
+                          prefixIcon: const Icon(Icons.phone),
+                          border: const OutlineInputBorder(),
+                          suffixIcon: IconButton(
+                            icon: const Icon(Icons.message, color: Colors.green),
+                            onPressed: () {
                               if (_mobileNumberController.text.isNotEmpty) {
                                 _launchWhatsApp(
                                   phoneNumber: _mobileNumberController.text,
-                                  billDetails: _generateReceiptText(), // Corrected function name
+                                  billDetails: _generateReceiptText(),
                                 );
                               } else {
-                                // Using CustomMessageBox from your project for consistency
-                                CustomMessageBox.show(context, "Error", "Please enter a mobile number to share bill on WhatsApp.");
+                                CustomMessageBox.show(context, "Error", "Please enter a mobile number to send a WhatsApp message.");
                               }
                             },
-                          ), // END OF WHATSAPP
-                          isDense: true,
+                          ),
+                          // Add an info icon if a customer is selected
+                          suffix: _selectedCustomer != null
+                              ? Tooltip(
+                            message: 'Customer: ${_selectedCustomer!.name}',
+                            child: const Icon(Icons.info, color: Colors.blue),
+                          )
+                              : null,
                         ),
+                        // No explicit onChanged, as listener is already set in initState.
+                        // We will rely on the debounced listener for search.
                       ),
                       const SizedBox(height: 10),
                       TextFormField(
                         controller: _numberPlateController,
                         textCapitalization: TextCapitalization.characters,
                         decoration: const InputDecoration(
-                          labelText: 'Number Plate',
+                          labelText: 'Vehicle Number Plate',
                           hintText: 'e.g., MH12AB1234',
-                          prefixIcon: Icon(Icons.directions_car),
+                          prefixIcon: Icon(Icons.car_rental),
                           border: OutlineInputBorder(),
-                          isDense: true,
                         ),
+                        // No explicit onChanged, as listener is already set in initState.
+                        // We will rely on the debounced listener for search.
                       ),
                       const SizedBox(height: 10),
-                      TextField(
+                      TextFormField(
                         controller: _discountController,
                         keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                          LengthLimitingTextInputFormatter(3),
-                        ],
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                         decoration: const InputDecoration(
-                          labelText: 'Discount',
-                          hintText: '0-100',
-                          suffixText: '%',
+                          labelText: 'Discount Percentage',
+                          hintText: 'e.g., 10',
                           prefixIcon: Icon(Icons.discount),
+                          suffixIcon: Text('%', style: TextStyle(fontSize: 18)),
                           border: OutlineInputBorder(),
-                          isDense: true,
-                          helperText: 'Enter percentage discount (0-100)',
-                          helperMaxLines: 2,
                         ),
+                        // Listener is set in initState for _updateDiscount and _debounceSaveBill
                       ),
                     ],
                   ),
                 ),
               ),
             ),
-            // List of service items
-            ListView.builder(
-              shrinkWrap: true, // Allows ListView to take only necessary space
-              physics: const NeverScrollableScrollPhysics(), // Disables ListView's own scrolling
+
+            // Service Items List
+            Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              itemCount: _serviceItems.length,
-              itemBuilder: (context, index) {
-                return ServiceItemRow(
-                  serviceItem: _serviceItems[index],
-                  allAvailableServices: _allAvailableServices,
-                  onDescriptionChanged: (desc) {
-                    _updateServiceItemDescription(index, desc);
-                    _debounceSaveBill(); // Trigger save after description change
-                  },
-                  onQuantityChanged: (qty) {
-                    _updateServiceItemQuantity(index, qty);
-                    _debounceSaveBill(); // Trigger save after quantity change
-                  },
-                  onUnitPriceChanged: (price) {
-                    _updateServiceItemUnitPrice(index, price);
-                    _debounceSaveBill(); // Trigger save after unit price change
-                  },
-                  onRemove: () {
-                    _removeServiceItem(index);
-                    _debounceSaveBill(); // Trigger save after removal
-                  },
-                );
-              },
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(), // Important for nested scroll views
+                itemCount: _serviceItems.length,
+                itemBuilder: (context, index) {
+                  return ServiceItemRow(
+                    key: ValueKey(_serviceItems[index].id), // Use a unique key for each item
+                    serviceItem: _serviceItems[index],
+                    allAvailableServices: _allAvailableServices,
+                    onDescriptionChanged: (description) {
+                      _updateServiceItemDescription(index, description);
+                      _debounceSaveBill(); // Trigger save after description change
+                    },
+                    onQuantityChanged: (qty) {
+                      _updateServiceItemQuantity(index, qty);
+                      _debounceSaveBill(); // Trigger save after quantity change
+                    },
+                    onUnitPriceChanged: (price) {
+                      _updateServiceItemUnitPrice(index, price);
+                      _debounceSaveBill(); // Trigger save after unit price change
+                    },
+                    onRemove: () {
+                      _removeServiceItem(index);
+                      _debounceSaveBill(); // Trigger save after removal
+                    },
+                  );
+                },
+              ),
             ),
             // Add Service Item Button
             Padding(
@@ -539,6 +632,7 @@ class _BillingScreenState extends State<BillingScreen> {
                 ),
               ),
             ),
+
             // Payment Summary and Action Buttons
             Padding(
               padding: const EdgeInsets.fromLTRB(16.0, 0.0, 16.0, 16.0),
@@ -568,6 +662,20 @@ class _BillingScreenState extends State<BillingScreen> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           const Text(
+                            'Discount:',
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.normal),
+                          ),
+                          Text(
+                            '₹${(_calculateSubTotal() * (_discountPercentage / 100)).toStringAsFixed(2)}',
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.normal),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 20, thickness: 1),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
                             'Grand Total:',
                             style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                           ),
@@ -593,9 +701,9 @@ class _BillingScreenState extends State<BillingScreen> {
                       ElevatedButton.icon(
                         onPressed: _printReceipt,
                         icon: const Icon(Icons.print),
-                        label: const Text('Print Receipt (Bluetooth)'),
+                        label: const Text('Print Receipt'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.deepPurple,
+                          backgroundColor: Colors.blueGrey,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 15),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -613,11 +721,7 @@ class _BillingScreenState extends State<BillingScreen> {
   }
 }
 
-// ServiceItemRow (updated to include direct "Add" button logic and unit price formatting)
-// lib/screens/billing_screen.dart (only the ServiceItemRow class, rest of the file remains same)
-// ... (rest of your BillingScreenState class and imports)
-
-// ServiceItemRow (updated to correctly display loaded description)
+// ServiceItemRow widget
 class ServiceItemRow extends StatefulWidget {
   final ServiceItem serviceItem;
   final List<ServiceItem> allAvailableServices;
@@ -644,17 +748,18 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
   late TextEditingController _descriptionController;
   late TextEditingController _quantityController;
   late TextEditingController _unitPriceController;
-  bool _showAddButton = false; // State to control add button visibility
+  bool _showAddButton = false; // To control visibility
 
   @override
   void initState() {
     super.initState();
-    // Format unit price: 0 decimal places if whole number, else 2 decimal places
+    _descriptionController = TextEditingController(text: widget.serviceItem.description);
+    _quantityController = TextEditingController(text: widget.serviceItem.quantity.toString());
+
+    // Initialize _unitPriceController with the correct value
     _unitPriceController = TextEditingController(
         text: widget.serviceItem.unitPrice.toStringAsFixed(
             widget.serviceItem.unitPrice.truncateToDouble() == widget.serviceItem.unitPrice ? 0 : 2));
-    _descriptionController = TextEditingController(text: widget.serviceItem.description);
-    _quantityController = TextEditingController(text: widget.serviceItem.quantity.toString());
 
     _quantityController.addListener(() {
       final qty = int.tryParse(_quantityController.text) ?? 0;
@@ -666,7 +771,6 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
       if (price < 0) _unitPriceController.text = '0.00'; // Prevent negative price
       widget.onUnitPriceChanged(price);
     });
-
     _descriptionController.addListener(_checkDescriptionExistence);
     _checkDescriptionExistence(); // Initial check
   }
@@ -691,71 +795,60 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
   @override
   void didUpdateWidget(covariant ServiceItemRow oldWidget) {
     super.didUpdateWidget(oldWidget);
-    bool descriptionChangedExternally = false;
+    // Update controllers only if the underlying serviceItem value has changed
+    // This prevents unnecessary rebuilds and potential issues with cursor position.
     if (widget.serviceItem.description != _descriptionController.text) {
       _descriptionController.text = widget.serviceItem.description;
-      descriptionChangedExternally = true;
     }
     if (widget.serviceItem.quantity.toString() != _quantityController.text) {
       _quantityController.text = widget.serviceItem.quantity.toString();
     }
-    // Update unit price text with new formatting logic
-    String newUnitPriceText = widget.serviceItem.unitPrice.toStringAsFixed(
+    // Only update the unitPriceController if it's not currently focused by the user
+    // and the value from the widget is different from the controller's current text.
+    final newUnitPriceText = widget.serviceItem.unitPrice.toStringAsFixed(
         widget.serviceItem.unitPrice.truncateToDouble() == widget.serviceItem.unitPrice ? 0 : 2);
-    if (newUnitPriceText != _unitPriceController.text) {
+    if (_unitPriceController.text != newUnitPriceText && !FocusScope.of(context).hasFocus) {
       _unitPriceController.text = newUnitPriceText;
     }
-
-    if (descriptionChangedExternally) {
-      _checkDescriptionExistence(); // Re-check if description changed from outside
-    }
+    _checkDescriptionExistence();
   }
+
 
   @override
   Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8.0),
-      elevation: 3,
+      elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       child: Padding(
         padding: const EdgeInsets.all(12.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
+                  flex: 3,
                   child: Autocomplete<ServiceItem>(
                     optionsBuilder: (TextEditingValue textEditingValue) {
-                      if (textEditingValue.text == '') {
+                      if (textEditingValue.text.isEmpty) {
                         return const Iterable<ServiceItem>.empty();
                       }
-                      return widget.allAvailableServices.where((ServiceItem item) {
-                        return item.description.toLowerCase().contains(textEditingValue.text.toLowerCase());
+                      return widget.allAvailableServices.where((ServiceItem option) {
+                        return option.description
+                            .toLowerCase()
+                            .contains(textEditingValue.text.toLowerCase());
                       });
                     },
                     displayStringForOption: (ServiceItem option) => option.description,
-                    fieldViewBuilder: (BuildContext context, TextEditingController textEditingController, FocusNode focusNode, VoidCallback onFieldSubmitted) {
-                      // ***************************************************************
-                      // IMPORTANT FIX: Initialize Autocomplete's controller with the loaded description
-                      // This ensures the displayed text matches the loaded data
-                      if (textEditingController.text != widget.serviceItem.description) {
-                        textEditingController.text = widget.serviceItem.description;
-                      }
-                      // Ensure the internal _descriptionController is linked to Autocomplete's controller
-                      // This part was already there, but now it will receive the correctly initialized text
-                      if (_descriptionController.text != textEditingController.text) {
-                        _descriptionController.text = textEditingController.text;
-                      }
-                      // ***************************************************************
-
-                      // Ensure listener is added/removed here if the controller instance changes, though usually it doesn't
-                      if (!_descriptionController.hasListeners) {
-                        _descriptionController.addListener(_checkDescriptionExistence);
-                      }
+                    fieldViewBuilder: (BuildContext context,
+                        TextEditingController fieldTextEditingController,
+                        FocusNode fieldFocusNode,
+                        VoidCallback onFieldSubmitted) {
+                      _descriptionController = fieldTextEditingController;
                       return TextFormField(
-                        controller: textEditingController, // Use Autocomplete's provided controller
-                        focusNode: focusNode,
+                        controller: _descriptionController,
+                        focusNode: fieldFocusNode,
                         decoration: const InputDecoration(
                           labelText: 'Service/Product Description',
                           prefixIcon: Icon(Icons.description),
@@ -770,9 +863,14 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                       );
                     },
                     onSelected: (ServiceItem selection) {
-                      _descriptionController.text = selection.description; // Update internal controller
+                      _descriptionController.text = selection.description;
                       widget.onDescriptionChanged(selection.description);
                       widget.onUnitPriceChanged(selection.unitPrice); // Auto-fill unit price
+
+                      // Explicitly update the unit price controller after selection
+                      _unitPriceController.text = selection.unitPrice.toStringAsFixed(
+                          selection.unitPrice.truncateToDouble() == selection.unitPrice ? 0 : 2);
+
                       _checkDescriptionExistence(); // Re-check after selection
                     },
                   ),
@@ -781,38 +879,27 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                   Padding(
                     padding: const EdgeInsets.only(left: 8.0),
                     child: IconButton(
-                      icon: const Icon(Icons.add_circle, color: Colors.blue),
-                      tooltip: 'Add new service/product',
+                      icon: const Icon(Icons.add_circle, color: Colors.green),
+                      tooltip: 'Add as New Service/Product',
                       onPressed: () async {
                         final firestoreService = Provider.of<FirestoreService>(context, listen: false);
                         final description = _descriptionController.text.trim();
-                        final unitPrice = double.tryParse(_unitPriceController.text) ?? 0.0;
-
-                        if (description.isEmpty) {
-                          CustomMessageBox.show(context, "Error", "Description cannot be empty.");
-                          return;
-                        }
-
-                        final newItem = ServiceItem(
-                          description: description,
-                          unitPrice: unitPrice,
-                          isProduct: false, // Defaulting to service
-                          quantity: 1, // Explicitly provide quantity
-                        );
-
-                        try {
-                          await firestoreService.addService(newItem);
-                          CustomMessageBox.show(context, "Success", "'$description' added to services.");
-                          // The _checkDescriptionExistence will automatically hide the button
-                          // as the new item will be in _allAvailableServices.
-                        } catch (e) {
-                          CustomMessageBox.show(context, "Error", "Failed to add service: $e");
+                        if (description.isNotEmpty) {
+                          // Create a ServiceItem object to pass to addService
+                          final newServiceProduct = ServiceItem(
+                            description: description,
+                            quantity: 1, // Default quantity, adjust if needed
+                            unitPrice: widget.serviceItem.unitPrice,
+                            isProduct: false, // Assume it's a service by default, adjust if needed
+                          );
+                          await firestoreService.addService(newServiceProduct);
+                          CustomMessageBox.show(context, "Success", "$description added as a new service!");
                         }
                       },
                     ),
                   ),
                 IconButton(
-                  icon: const Icon(Icons.delete, color: Colors.red),
+                  icon: const Icon(Icons.remove_circle, color: Colors.red),
                   onPressed: widget.onRemove,
                   tooltip: 'Remove Item',
                 ),
@@ -822,14 +909,13 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
             Row(
               children: [
                 Expanded(
-                  flex: 3,
                   child: TextFormField(
                     controller: _quantityController,
                     keyboardType: TextInputType.number,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                     decoration: const InputDecoration(
                       labelText: 'Quantity',
-                      prefixIcon: Icon(Icons.format_list_numbered),
+                      prefixIcon: Icon(Icons.numbers),
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
@@ -837,10 +923,9 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                 ),
                 const SizedBox(width: 10),
                 Expanded(
-                  flex: 4,
                   child: TextFormField(
                     controller: _unitPriceController,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    keyboardType: TextInputType.number,
                     inputFormatters: [
                       FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
                     ],
@@ -852,13 +937,24 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
+              ],
+            ),
+            const SizedBox(height: 10), // Add spacing between rows
+            Row(
+              children: [
                 Expanded(
-                  flex: 3,
-                  child: Text(
-                    'Total: ₹${widget.serviceItem.total.toStringAsFixed(2)}',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    textAlign: TextAlign.right,
+                  child: AbsorbPointer(
+                    absorbing: true, // Make this text field non-editable
+                    child: TextFormField(
+                      controller: TextEditingController(text: widget.serviceItem.total.toStringAsFixed(2)),
+                      decoration: const InputDecoration(
+                        labelText: 'Total',
+                        prefixIcon: Icon(Icons.calculate),
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
               ],
