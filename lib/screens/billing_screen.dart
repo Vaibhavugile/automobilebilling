@@ -13,7 +13,7 @@ import 'package:motor_service_billing_app/screens/custom_message_box.dart';
 // Removed: import 'package:motor_service_billing_app/screens/service_product_management_screen.dart'; // No longer navigated from here
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:motor_service_billing_app/utils/extensions.dart'; // Import the new extensions file
-
+import 'package:url_launcher/url_launcher.dart'; // Add this line
 class BillingScreen extends StatefulWidget {
   final String tableId;
   const BillingScreen({super.key, required this.tableId});
@@ -94,6 +94,39 @@ class _BillingScreenState extends State<BillingScreen> {
     } catch (e) {
       // print('Error saving bill for table ${widget.tableId}: $e'); // For debugging
       // Optionally show a silent error message or log it
+    }
+  }
+  // NEW FUNCTION FOR WHATSAPP INTEGRATION
+  Future<void> _launchWhatsApp({
+    required String phoneNumber,
+    required String billDetails,
+  }) async {
+    // Ensure the phone number is in international format without '+'
+    // For example, if the number is +911234567890, use '911234567890'
+    final String whatsappPhoneNumber = phoneNumber.startsWith('+')
+        ? phoneNumber.substring(1)
+        : phoneNumber;
+
+    // Encode the message to handle spaces and special characters correctly
+    final String message = Uri.encodeComponent(
+        "Hello! Here are your bill details:\n$billDetails\n\nThank you for your business!"
+    );
+
+    // Using wa.me for direct chat link
+    final Uri url = Uri.parse("https://wa.me/$whatsappPhoneNumber?text=$message");
+
+    // LaunchMode.externalApplication is generally preferred for opening external apps.
+    // If you continue to face issues with this, you can try LaunchMode.platformDefault
+    // which might open in a browser first, then redirect.
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } else {
+      // Show an error message if WhatsApp cannot be launched
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not open WhatsApp. Please ensure it is installed and the number is correct.'),
+        ),
+      );
     }
   }
 
@@ -403,11 +436,25 @@ class _BillingScreenState extends State<BillingScreen> {
                       TextFormField(
                         controller: _mobileNumberController,
                         keyboardType: TextInputType.phone,
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration( // REMOVED 'const' HERE
                           labelText: 'Customer Mobile Number',
                           hintText: 'e.g., 9876543210',
-                          prefixIcon: Icon(Icons.phone),
-                          border: OutlineInputBorder(),
+                          prefixIcon: const Icon(Icons.phone), // 'const' can remain here if Icon is constant
+                          border: const OutlineInputBorder(), // 'const' can remain here if OutlineInputBorder is constant
+                          suffixIcon: IconButton( // ADD THIS BLOCK FOR WHATSAPP BUTTON
+                            icon: const Icon(Icons.message, color: Colors.green), // Using Icons.message as Icons.whatsapp doesn't exist
+                            onPressed: () { // This function makes InputDecoration not a constant
+                              if (_mobileNumberController.text.isNotEmpty) {
+                                _launchWhatsApp(
+                                  phoneNumber: _mobileNumberController.text,
+                                  billDetails: _generateReceiptText(), // Corrected function name
+                                );
+                              } else {
+                                // Using CustomMessageBox from your project for consistency
+                                CustomMessageBox.show(context, "Error", "Please enter a mobile number to share bill on WhatsApp.");
+                              }
+                            },
+                          ), // END OF WHATSAPP
                           isDense: true,
                         ),
                       ),

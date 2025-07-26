@@ -1,7 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.motor_service_billing_app">
 
-    <!-- Permissions for flutter_blue_plus -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
@@ -36,12 +35,12 @@
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
+
     <queries>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
-        <!-- Required for Bluetooth device discovery on Android 11+ -->
         <package android:name="com.google.android.bluetooth" />
         <package android:name="com.android.bluetooth" />
         <intent>
@@ -50,5 +49,12 @@
         <intent>
             <action android:name="android.bluetooth.adapter.action.REQUEST_DISCOVERABLE" />
         </intent>
+
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="wa.me" />
+        </intent>
+
     </queries>
 </manifest>
