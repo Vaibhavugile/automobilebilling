@@ -1,100 +1,63 @@
 // lib/screens/service_product_management_screen.dart
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:motor_service_billing_app/models/service_item.dart';
-import 'package:motor_service_billing_app/services/firestore_service.dart';
-import 'package:motor_service_billing_app/screens/custom_message_box.dart';
+import 'package:flutter/services.dart'; // For TextInputFormatter
+import '../models/service_item.dart';
+import '../services/firestore_service.dart';
+import '../screens/custom_message_box.dart'; // Assuming this exists
 
 class ServiceProductManagementScreen extends StatefulWidget {
-  // Add the initialDescription parameter here
-  final String? initialDescription;
-
-  const ServiceProductManagementScreen({super.key, this.initialDescription}); // Update the constructor
-
   @override
-  State<ServiceProductManagementScreen> createState() => _ServiceProductManagementScreenState();
+  _ServiceProductManagementScreenState createState() =>
+      _ServiceProductManagementScreenState();
 }
 
-class _ServiceProductManagementScreenState extends State<ServiceProductManagementScreen> {
+class _ServiceProductManagementScreenState
+    extends State<ServiceProductManagementScreen> {
+  final FirestoreService _firestoreService = FirestoreService();
+
   @override
   Widget build(BuildContext context) {
-    final firestoreService = Provider.of<FirestoreService>(context);
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Manage Services & Products'),
-        centerTitle: true,
+        title: Text('Service & Product Management'),
       ),
       body: StreamBuilder<List<ServiceItem>>(
-        stream: firestoreService.getServicesAndProductsStream(),
+        stream: _firestoreService.getServicesAndProductsStream(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError) {
             return Center(child: Text('Error: ${snapshot.error}'));
           }
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return const Center(
-              child: Text(
-                'No services or products added yet.\nTap + to add one!',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16, color: Colors.grey),
-              ),
-            );
+            return Center(child: Text('No services or products added yet.'));
           }
 
           final items = snapshot.data!;
           return ListView.builder(
-            padding: const EdgeInsets.all(16.0),
             itemCount: items.length,
             itemBuilder: (context, index) {
               final item = items[index];
               return Card(
-                margin: const EdgeInsets.symmetric(vertical: 8.0),
-                elevation: 3,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                margin: EdgeInsets.symmetric(vertical: 4, horizontal: 8),
                 child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                  title: Text(
-                    item.description,
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
+                  title: Text(item.description),
                   subtitle: Text(
-                    '₹${item.unitPrice.toStringAsFixed(2)} - ${item.isProduct ? 'Product' : 'Service'}',
-                    style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
-                  ),
+                      'Unit Price: Rs. ${item.unitPrice.toStringAsFixed(2)} ' +
+                          (item.isProduct
+                              ? '| Product | Stock: ${item.stock ?? 'N/A'}' // MODIFIED: Display stock
+                              : '| Service')),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.edit, color: Colors.blue),
-                        onPressed: () => _showAddEditItemDialog(context, item: item),
-                        tooltip: 'Edit Item',
+                        icon: Icon(Icons.edit),
+                        onPressed: () => _showServiceProductDialog(item: item),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () async {
-                          final bool? confirm = await CustomMessageBox.showConfirmation(
-                            context,
-                            "Confirm Delete",
-                            "Are you sure you want to delete '${item.description}'?",
-                          );
-                          if (confirm == true) {
-                            try {
-                              if (item.id != null) { // Ensure ID is not null before deleting
-                                // Pass isProduct to deleteServiceProduct
-                                await firestoreService.deleteServiceProduct(item.id!);
-                                CustomMessageBox.show(context, "Success", "'${item.description}' deleted successfully.");
-                              } else {
-                                CustomMessageBox.show(context, "Error", "Item ID is missing. Cannot delete.");
-                              }
-                            } catch (e) {
-                              CustomMessageBox.show(context, "Error", "Failed to delete item: $e");
-                            }
-                          }
-                        },
-                        tooltip: 'Delete Item',
+                        icon: Icon(Icons.delete),
+                        onPressed: () => _confirmDelete(item.id!),
                       ),
                     ],
                   ),
@@ -105,113 +68,145 @@ class _ServiceProductManagementScreenState extends State<ServiceProductManagemen
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddEditItemDialog(context), // Call without initial description for FAB
-        backgroundColor: Theme.of(context).primaryColor,
+        onPressed: () => _showServiceProductDialog(),
+        child: Icon(Icons.add),
         tooltip: 'Add New Service/Product',
-        child: const Icon(Icons.add, color: Colors.white),
       ),
     );
   }
 
-  void _showAddEditItemDialog(BuildContext context, {ServiceItem? item}) {
-    final isEditing = item != null;
-    // Use widget.initialDescription here if it's not editing
-    final _descriptionController = TextEditingController(text: item?.description ?? widget.initialDescription ?? '');
-    final _unitPriceController = TextEditingController(text: item?.unitPrice.toStringAsFixed(2));
+  void _showServiceProductDialog({ServiceItem? item}) {
+    final TextEditingController _descriptionController =
+    TextEditingController(text: item?.description ?? '');
+    final TextEditingController _unitPriceController =
+    TextEditingController(text: item?.unitPrice.toStringAsFixed(2) ?? '0.00');
+    final TextEditingController _stockController = // NEW: Stock Controller
+    TextEditingController(text: item?.stock?.toString() ?? '0');
     bool _isProduct = item?.isProduct ?? false;
 
     showDialog(
       context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: Text(isEditing ? 'Edit Item' : 'Add New Item'),
-          content: StatefulBuilder(
-            builder: (BuildContext context, StateSetter setState) {
-              return SingleChildScrollView(
+      builder: (context) {
+        return StatefulBuilder( // Use StatefulBuilder to update dialog state
+          builder: (context, setStateSB) {
+            return AlertDialog(
+              title: Text(item == null ? 'Add Service/Product' : 'Edit Service/Product'),
+              content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     TextField(
                       controller: _descriptionController,
-                      decoration: const InputDecoration(labelText: 'Description'),
-                      textCapitalization: TextCapitalization.sentences,
+                      decoration: InputDecoration(labelText: 'Description'),
                     ),
+                    SizedBox(height: 10),
                     TextField(
                       controller: _unitPriceController,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(labelText: 'Unit Price'),
+                      decoration: InputDecoration(labelText: 'Unit Price'),
+                      keyboardType: TextInputType.numberWithOptions(decimal: true),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d{0,2}')),
+                      ],
                     ),
+                    SizedBox(height: 10),
                     Row(
                       children: [
-                        const Text('Is Product?'),
+                        Text('Is Product?'),
                         Checkbox(
                           value: _isProduct,
-                          onChanged: (bool? newValue) {
-                            setState(() {
-                              _isProduct = newValue ?? false;
+                          onChanged: (bool? value) {
+                            setStateSB(() {
+                              _isProduct = value ?? false;
                             });
                           },
                         ),
                       ],
                     ),
+                    // NEW: Stock field, only visible if 'Is Product' is checked
+                    if (_isProduct) ...[
+                      SizedBox(height: 10),
+                      TextField(
+                        controller: _stockController,
+                        decoration: InputDecoration(labelText: 'Stock Quantity'),
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                      ),
+                    ],
                   ],
                 ),
-              );
-            },
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-              },
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final firestoreService = Provider.of<FirestoreService>(dialogContext, listen: false);
-                final description = _descriptionController.text.trim();
-                final unitPrice = double.tryParse(_unitPriceController.text) ?? 0.0;
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    final String description = _descriptionController.text.trim();
+                    final double unitPrice = double.tryParse(_unitPriceController.text) ?? 0.0;
+                    final int stock = _isProduct ? (int.tryParse(_stockController.text) ?? 0) : 0; // NEW: Get stock value
 
-                if (description.isEmpty || unitPrice <= 0) {
-                  CustomMessageBox.show(dialogContext, "Error", "Please enter valid description and price.");
-                  return;
-                }
-
-                try {
-                  if (isEditing) {
-                    // Update existing item
-                    if (item?.id != null) {
-                      await firestoreService.updateServiceProduct(
-                        item!.id!,
-                        description,
-                        unitPrice,
-                        _isProduct,
-                        item.isProduct != _isProduct, // Pass if type changed
-                      );
-                      CustomMessageBox.show(dialogContext, "Success", "'$description' updated successfully.");
-                    } else {
-                      CustomMessageBox.show(dialogContext, "Error", "Item ID is missing. Cannot update.");
+                    if (description.isEmpty || unitPrice <= 0) {
+                      CustomMessageBox.showError(context, 'Please fill all fields correctly.');
+                      return;
                     }
-                  } else {
-                    // Add new item
-                    final newItem = ServiceItem(
+                    if (_isProduct && stock < 0) { // Basic validation for stock
+                      CustomMessageBox.showError(context, 'Stock quantity cannot be negative.');
+                      return;
+                    }
+
+                    CustomMessageBox.showLoading(context, 'Saving...');
+
+                    final ServiceItem newItem = ServiceItem(
+                      id: item?.id, // Keep ID if editing
                       description: description,
+                      quantity: 1, // Default quantity for display in list
                       unitPrice: unitPrice,
                       isProduct: _isProduct,
-                      quantity: 1, // Default quantity for a new master item
+                      stock: _isProduct ? stock : null, // NEW: Pass stock based on isProduct
                     );
-                    await firestoreService.addService(newItem);
-                    CustomMessageBox.show(dialogContext, "Success", "'$description' added successfully.");
-                  }
-                  Navigator.of(dialogContext).pop(); // Close dialog
-                } catch (e) {
-                  CustomMessageBox.show(dialogContext, "Error", "Failed to save item: $e");
-                }
-              },
-              child: Text(isEditing ? 'Update' : 'Add'),
-            ),
-          ],
+
+                    try {
+                      if (item == null) {
+                        // Add new item
+                        await _firestoreService.addService(newItem);
+                        CustomMessageBox.showSuccess(context, 'Service/Product added successfully!');
+                      } else {
+                        // Update existing item
+                        await _firestoreService.updateServiceProduct(newItem);
+                        CustomMessageBox.showSuccess(context, 'Service/Product updated successfully!');
+                      }
+                      Navigator.pop(context); // Pop loading dialog
+                      Navigator.pop(context); // Pop dialog itself
+                    } catch (e) {
+                      Navigator.pop(context); // Pop loading dialog
+                      CustomMessageBox.showError(context, 'Failed to save: $e');
+                    }
+                  },
+                  child: Text(item == null ? 'Add' : 'Update'),
+                ),
+              ],
+            );
+          },
         );
+      },
+    );
+  }
+
+  void _confirmDelete(String itemId) {
+    CustomMessageBox.showConfirmation(
+      context,
+      'Are you sure you want to delete this item?',
+      onConfirm: () async {
+        try {
+          CustomMessageBox.showLoading(context, 'Deleting...');
+          await _firestoreService.deleteServiceProduct(itemId);
+          Navigator.pop(context); // Pop loading dialog
+          CustomMessageBox.showSuccess(context, 'Item deleted successfully!');
+        } catch (e) {
+          Navigator.pop(context); // Pop loading dialog
+          CustomMessageBox.showError(context, 'Failed to delete item: $e');
+        }
       },
     );
   }

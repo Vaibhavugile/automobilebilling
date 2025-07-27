@@ -2,8 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:motor_service_billing_app/screens/table_selection_screen.dart';
-import 'package:motor_service_billing_app/screens/custom_message_box.dart';
-import 'package:motor_service_billing_app/services/firestore_service.dart'; // Assuming your FirestoreService will handle authentication
+import 'package:motor_service_billing_app/screens/custom_message_box.dart'; // Corrected import path
+import 'package:motor_service_billing_app/services/firestore_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -26,8 +26,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
       try {
         final firestoreService = Provider.of<FirestoreService>(context, listen: false);
-        // Replace with your actual authentication method (e.g., Firebase Auth)
-        // For demonstration, let's assume a dummy login in FirestoreService
         await firestoreService.signInWithEmailPassword(
           _emailController.text.trim(),
           _passwordController.text.trim(),
@@ -35,16 +33,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
         if (mounted) {
           Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (context) => const TableSelectionScreen()),
+            MaterialPageRoute(
+              builder: (context) => TableSelectionScreen(),
+            ),
           );
         }
-      } catch (e) {
+      } on Exception catch (e) {
         if (mounted) {
-          CustomMessageBox.show(
-            context,
-            "Login Failed",
-            e.toString(), // Display the error message from the service
-          );
+          // FIX: Corrected the arguments for CustomMessageBox.showError
+          CustomMessageBox.showError(context, e.toString(), title: 'Login Failed');
         }
       } finally {
         if (mounted) {
@@ -57,13 +54,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   @override
-  void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
@@ -72,51 +62,43 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
       body: Center(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
+          padding: const EdgeInsets.all(16.0),
           child: Form(
             key: _formKey,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Application Logo/Icon (Optional)
-                const Icon(
-                  Icons.lock_person,
-                  size: 100,
-                  color: Colors.blueAccent,
+              children: <Widget>[
+                Image.asset(
+                  'assets/app_logo.png', // Make sure you have an app_logo.png in your assets folder
+                  height: 150,
                 ),
-                const SizedBox(height: 30),
-
+                const SizedBox(height: 40),
                 TextFormField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
                   decoration: const InputDecoration(
                     labelText: 'Email',
-                    hintText: 'Enter your email',
-                    prefixIcon: Icon(Icons.email),
                     border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(vertical: 16.0, horizontal: 12.0),
+                    prefixIcon: Icon(Icons.email),
                   ),
                   validator: (value) {
                     if (value == null || value.isEmpty) {
                       return 'Please enter your email';
                     }
-                    if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
-                      return 'Please enter a valid email address';
+                    if (!value.contains('@')) {
+                      return 'Please enter a valid email';
                     }
                     return null;
                   },
                 ),
                 const SizedBox(height: 20),
-
                 TextFormField(
                   controller: _passwordController,
                   obscureText: true,
                   decoration: const InputDecoration(
                     labelText: 'Password',
-                    hintText: 'Enter your password',
-                    prefixIcon: Icon(Icons.lock),
                     border: OutlineInputBorder(),
-                    contentPadding: EdgeInsets.symmetric(vertical: 16.0, horizontal: 12.0),
+                    prefixIcon: Icon(Icons.lock),
                   ),
                   validator: (value) {
                     if (value == null || value.isEmpty) {
@@ -152,13 +134,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                // Optional: A "Forgot Password?" or "Register" link
-                // TextButton(
-                //   onPressed: () {
-                //     // Navigate to forgot password screen
-                //   },
-                //   child: const Text('Forgot Password?'),
-                // ),
               ],
             ),
           ),

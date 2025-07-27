@@ -9,6 +9,7 @@ class ServiceItem {
   double total; // This will be calculated
 
   bool isProduct; // True for products, false for services
+  int? stock; // NEW: Stock quantity for products. Nullable as services don't have stock.
 
   ServiceItem({
     this.id,
@@ -16,7 +17,9 @@ class ServiceItem {
     required this.quantity,
     required this.unitPrice,
     this.isProduct = false,
+    this.stock, // NEW: Add stock to constructor
   }) : total = quantity * unitPrice; // Initialize total in constructor
+
 
   // Method to recalculate total (can be called internally or externally)
   void calculateTotal() {
@@ -31,6 +34,7 @@ class ServiceItem {
       quantity: (map['quantity'] as num?)?.toInt() ?? 0, // Cast to int
       unitPrice: (map['unitPrice'] as num?)?.toDouble() ?? 0.0,
       isProduct: map['isProduct'] ?? false,
+      stock: (map['stock'] as num?)?.toInt(), // NEW: Parse stock from map
     )..calculateTotal(); // Calculate total after creation
   }
 
@@ -43,6 +47,7 @@ class ServiceItem {
       'unitPrice': unitPrice,
       'total': total, // Store calculated total
       'isProduct': isProduct,
+      'stock': stock, // NEW: Include stock in the map
     };
   }
 
@@ -53,6 +58,7 @@ class ServiceItem {
     int? quantity, // Changed to int
     double? unitPrice,
     bool? isProduct,
+    int? stock, // NEW: Add stock to copyWith
   }) {
     // Create a new ServiceItem instance with updated values
     final newItem = ServiceItem(
@@ -61,13 +67,9 @@ class ServiceItem {
       quantity: quantity ?? this.quantity,
       unitPrice: unitPrice ?? this.unitPrice,
       isProduct: isProduct ?? this.isProduct,
+      stock: stock ?? this.stock, // NEW: Copy stock
     );
-    // Ensure the total is recalculated for the new item
-    newItem.calculateTotal();
+    newItem.calculateTotal(); // Recalculate total for the new instance
     return newItem;
   }
-
-  // For Autocomplete display
-  @override
-  String toString() => description;
 }

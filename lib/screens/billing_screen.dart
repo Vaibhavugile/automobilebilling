@@ -15,6 +15,8 @@ import 'package:motor_service_billing_app/screens/custom_message_box.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart'; // Corrected import to directly use the package
 import 'package:motor_service_billing_app/utils/extensions.dart'; // Import the new extensions file
 import 'package:url_launcher/url_launcher.dart'; // Add this line
+import 'package:cloud_firestore/cloud_firestore.dart'; // NEW: Import DocumentReference
+
 class BillingScreen extends StatefulWidget {
   final String tableId;
   const BillingScreen({super.key, required this.tableId});
@@ -263,16 +265,35 @@ class _BillingScreenState extends State<BillingScreen> {
     _debounceSaveBill(); // Trigger save after removing an item
   }
 
-  void _updateServiceItemDescription(int index, String description) {
+  // MODIFIED: To also receive isProduct, id, and stock from ServiceItemRow after autocomplete
+  void _updateServiceItemDescription(int index, String description, {
+    double? unitPrice, bool? isProduct, String? id, int? stock,
+  }) {
     setState(() {
-      _serviceItems[index].description = description;
-      // Autopopulate price if a matching service/product is found
-      final matchingItem = _serviceProductMap[description.toLowerCase()];
-      if (matchingItem != null) {
-        _serviceItems[index].unitPrice = matchingItem.unitPrice;
-        _serviceItems[index].isProduct = matchingItem.isProduct;
-        _serviceItems[index].calculateTotal(); // Recalculate total
+      final currentItem = _serviceItems[index];
+      currentItem.description = description;
+
+      // Autopopulate price and inventory-related fields if provided by autocomplete
+      if (unitPrice != null) currentItem.unitPrice = unitPrice;
+      if (isProduct != null) currentItem.isProduct = isProduct;
+      if (id != null) currentItem.id = id;
+      // We don't directly set stock in ServiceItem here, as it's a dynamic property of the master item.
+      // Stock is primarily used for validation.
+
+      // If description changes without autocomplete providing full data, try map lookup
+      if (unitPrice == null || isProduct == null || id == null) {
+        final matchingItem = _serviceProductMap[description.toLowerCase()];
+        if (matchingItem != null) {
+          currentItem.unitPrice = matchingItem.unitPrice;
+          currentItem.isProduct = matchingItem.isProduct;
+          currentItem.id = matchingItem.id; // Crucial for inventory tracking
+        } else {
+          // If no match, default to non-product and no ID
+          currentItem.isProduct = false;
+          currentItem.id = null;
+        }
       }
+      currentItem.calculateTotal(); // Recalculate total
     });
     // _debounceSaveBill() will be called from the parent's ListView.builder callback
   }
@@ -321,11 +342,40 @@ class _BillingScreenState extends State<BillingScreen> {
     final bool? confirm = await CustomMessageBox.showConfirmation(
       context,
       "Confirm Completion",
-      "Are you sure you want to complete this bill?",
+
     );
 
     if (confirm == true) {
       try {
+        String customerIdToUse = _selectedCustomer?.id ?? ''; // Start with existing ID or empty
+
+        // --- Customer Save/Update Logic ---
+        if (_selectedCustomer == null) {
+          // New customer scenario: Create a new customer
+          Customer newCustomer = Customer(
+            id: null, // Firestore will assign an ID
+            name: 'Unnamed Customer', // You might want to get a name from somewhere else or make it optional
+            mobileNumber: _mobileNumberController.text,
+            vehicleNumberPlates: [_numberPlateController.text],
+            address: '', // Example: Initialize
+            email: '',   // Example: Initialize
+          );
+          DocumentReference docRef = await firestoreService.addCustomer(newCustomer);
+          customerIdToUse = docRef.id; // Get the ID assigned by Firestore
+          setState(() {
+            _selectedCustomer = newCustomer.copyWith(id: customerIdToUse); // Update local selected customer
+          });
+        } else {
+          // Existing customer scenario: Check if number plate needs adding
+          if (!_selectedCustomer!.vehicleNumberPlates.contains(_numberPlateController.text)) {
+            // If the current number plate is new for this customer, add it
+            _selectedCustomer!.vehicleNumberPlates.add(_numberPlateController.text);
+            await firestoreService.updateCustomer(_selectedCustomer!);
+          }
+          customerIdToUse = _selectedCustomer!.id!; // Use the existing customer's ID
+        }
+        // --- End Customer Save/Update Logic ---
+
         final bill = Bill(
           tableId: widget.tableId,
           customerMobile: _mobileNumberController.text,
@@ -334,7 +384,7 @@ class _BillingScreenState extends State<BillingScreen> {
           discountPercentage: _discountPercentage,
           timestamp: DateTime.now(),
           grandTotal: _calculateGrandTotal(), // Pass grandTotal
-          customerId: _selectedCustomer?.id, // Pass the selected customer's ID
+          customerId: customerIdToUse.isNotEmpty ? customerIdToUse : null, // Pass the customer's ID
         );
         await firestoreService.completeBill(bill);
         await _clearBill(silent: true); // Clear the bill after completion
@@ -342,7 +392,7 @@ class _BillingScreenState extends State<BillingScreen> {
         CustomMessageBox.show(context, "Success", "Bill for Table ${widget.tableId} completed and cleared!");
         Navigator.of(context).pop(); // Go back to table selection
       } catch (e) {
-        CustomMessageBox.show(context, "Error", "Failed to complete bill: $e");
+        CustomMessageBox.show(context, "Error", "Failed to complete bill: ${e.toString()}");
       }
     }
   }
@@ -353,7 +403,7 @@ class _BillingScreenState extends State<BillingScreen> {
       confirm = await CustomMessageBox.showConfirmation(
         context,
         "Confirm Clear",
-        "Are you sure you want to clear all data for this bill?",
+
       );
     }
 
@@ -596,8 +646,10 @@ class _BillingScreenState extends State<BillingScreen> {
                     key: ValueKey(_serviceItems[index].id), // Use a unique key for each item
                     serviceItem: _serviceItems[index],
                     allAvailableServices: _allAvailableServices,
-                    onDescriptionChanged: (description) {
-                      _updateServiceItemDescription(index, description);
+                    // MODIFIED: Pass isProduct, id, and stock details from autocomplete selection
+                    onDescriptionChanged: (description, {unitPrice, isProduct, id, stock}) {
+                      _updateServiceItemDescription(index, description,
+                          unitPrice: unitPrice, isProduct: isProduct, id: id, stock: stock);
                       _debounceSaveBill(); // Trigger save after description change
                     },
                     onQuantityChanged: (qty) {
@@ -612,6 +664,7 @@ class _BillingScreenState extends State<BillingScreen> {
                       _removeServiceItem(index);
                       _debounceSaveBill(); // Trigger save after removal
                     },
+                    serviceProductMap: _serviceProductMap, // Pass the map for stock lookup
                   );
                 },
               ),
@@ -725,7 +778,8 @@ class _BillingScreenState extends State<BillingScreen> {
 class ServiceItemRow extends StatefulWidget {
   final ServiceItem serviceItem;
   final List<ServiceItem> allAvailableServices;
-  final ValueChanged<String> onDescriptionChanged;
+  final Map<String, ServiceItem> serviceProductMap; // NEW: Pass the map
+  final Function(String description, {double? unitPrice, bool? isProduct, String? id, int? stock}) onDescriptionChanged; // MODIFIED signature
   final ValueChanged<int> onQuantityChanged;
   final ValueChanged<double> onUnitPriceChanged;
   final VoidCallback onRemove;
@@ -734,6 +788,7 @@ class ServiceItemRow extends StatefulWidget {
     super.key,
     required this.serviceItem,
     required this.allAvailableServices,
+    required this.serviceProductMap, // NEW
     required this.onDescriptionChanged,
     required this.onQuantityChanged,
     required this.onUnitPriceChanged,
@@ -750,6 +805,9 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
   late TextEditingController _unitPriceController;
   bool _showAddButton = false; // To control visibility
 
+  // Track the master ServiceItem for the current row for stock validation
+  ServiceItem? _masterServiceProduct;
+
   @override
   void initState() {
     super.initState();
@@ -761,11 +819,7 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
         text: widget.serviceItem.unitPrice.toStringAsFixed(
             widget.serviceItem.unitPrice.truncateToDouble() == widget.serviceItem.unitPrice ? 0 : 2));
 
-    _quantityController.addListener(() {
-      final qty = int.tryParse(_quantityController.text) ?? 0;
-      if (qty < 0) _quantityController.text = '0'; // Prevent negative quantity
-      widget.onQuantityChanged(qty);
-    });
+    _quantityController.addListener(_onQuantityChangedLocal); // MODIFIED: Local listener for validation
     _unitPriceController.addListener(() {
       final price = double.tryParse(_unitPriceController.text) ?? 0.0;
       if (price < 0) _unitPriceController.text = '0.00'; // Prevent negative price
@@ -773,7 +827,43 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
     });
     _descriptionController.addListener(_checkDescriptionExistence);
     _checkDescriptionExistence(); // Initial check
+
+    // Initialize _masterServiceProduct if the item already has an ID from a loaded bill
+    if (widget.serviceItem.id != null) {
+      _masterServiceProduct = widget.allAvailableServices.firstWhere(
+            (item) => item.id == widget.serviceItem.id,
+        orElse: () => ServiceItem(description: '', quantity: 0, unitPrice: 0.0), // Dummy if not found
+      );
+      if (_masterServiceProduct!.description.isEmpty) { // Check if it was a dummy
+        _masterServiceProduct = null;
+      }
+    }
   }
+
+  // NEW: Local quantity change handler with stock validation
+  void _onQuantityChangedLocal() {
+    final int enteredQuantity = int.tryParse(_quantityController.text) ?? 0;
+    if (enteredQuantity < 0) {
+      _quantityController.text = '0'; // Prevent negative quantity in UI
+      widget.onQuantityChanged(0);
+      return;
+    }
+
+    // Perform stock validation if it's a product
+    if (_masterServiceProduct != null && _masterServiceProduct!.isProduct == true) {
+      final int availableStock = _masterServiceProduct!.stock ?? 0;
+      if (enteredQuantity > availableStock) {
+        // Show error and revert quantity to max available stock
+        CustomMessageBox.showError(context,
+            'Requested quantity ($enteredQuantity) exceeds available stock ($availableStock).');
+        _quantityController.text = availableStock.toString(); // Revert to max available stock
+        widget.onQuantityChanged(availableStock);
+        return;
+      }
+    }
+    widget.onQuantityChanged(enteredQuantity);
+  }
+
 
   void _checkDescriptionExistence() {
     final text = _descriptionController.text.trim().toLowerCase();
@@ -787,6 +877,7 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
   void dispose() {
     _descriptionController.removeListener(_checkDescriptionExistence); // Remove listener
     _descriptionController.dispose();
+    _quantityController.removeListener(_onQuantityChangedLocal); // Remove local listener
     _quantityController.dispose();
     _unitPriceController.dispose();
     super.dispose();
@@ -800,7 +891,8 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
     if (widget.serviceItem.description != _descriptionController.text) {
       _descriptionController.text = widget.serviceItem.description;
     }
-    if (widget.serviceItem.quantity.toString() != _quantityController.text) {
+    // Only update quantity controller if it's not currently focused by the user
+    if (widget.serviceItem.quantity.toString() != _quantityController.text && !FocusScope.of(context).hasFocus) {
       _quantityController.text = widget.serviceItem.quantity.toString();
     }
     // Only update the unitPriceController if it's not currently focused by the user
@@ -811,6 +903,12 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
       _unitPriceController.text = newUnitPriceText;
     }
     _checkDescriptionExistence();
+
+    // Re-initialize _masterServiceProduct if the item's ID or description changes
+    if (widget.serviceItem.id != oldWidget.serviceItem.id ||
+        widget.serviceItem.description != oldWidget.serviceItem.description) {
+      _masterServiceProduct = widget.serviceProductMap[widget.serviceItem.description.toLowerCase()];
+    }
   }
 
 
@@ -856,6 +954,8 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                           isDense: true,
                         ),
                         onChanged: (value) {
+                          // When text is changed manually, clear master item and pass basic info
+                          _masterServiceProduct = null;
                           widget.onDescriptionChanged(value);
                           _checkDescriptionExistence(); // Re-check on every change
                         },
@@ -863,14 +963,17 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                       );
                     },
                     onSelected: (ServiceItem selection) {
+                      // NEW: When an item is selected from autocomplete
+                      setState(() {
+                        _masterServiceProduct = selection; // Set the master item
+                      });
                       _descriptionController.text = selection.description;
-                      widget.onDescriptionChanged(selection.description);
-                      widget.onUnitPriceChanged(selection.unitPrice); // Auto-fill unit price
-
-                      // Explicitly update the unit price controller after selection
-                      _unitPriceController.text = selection.unitPrice.toStringAsFixed(
-                          selection.unitPrice.truncateToDouble() == selection.unitPrice ? 0 : 2);
-
+                      // Pass full details to parent
+                      widget.onDescriptionChanged(selection.description,
+                          unitPrice: selection.unitPrice,
+                          isProduct: selection.isProduct,
+                          id: selection.id,
+                          stock: selection.stock); // Pass stock for immediate validation in _onQuantityChangedLocal
                       _checkDescriptionExistence(); // Re-check after selection
                     },
                   ),
@@ -891,6 +994,7 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                             quantity: 1, // Default quantity, adjust if needed
                             unitPrice: widget.serviceItem.unitPrice,
                             isProduct: false, // Assume it's a service by default, adjust if needed
+                            stock: null, // New services don't have stock
                           );
                           await firestoreService.addService(newServiceProduct);
                           CustomMessageBox.show(context, "Success", "$description added as a new service!");
@@ -913,11 +1017,19 @@ class _ServiceItemRowState extends State<ServiceItemRow> {
                     controller: _quantityController,
                     keyboardType: TextInputType.number,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Quantity',
-                      prefixIcon: Icon(Icons.numbers),
-                      border: OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.numbers),
+                      border: const OutlineInputBorder(),
                       isDense: true,
+                      // Display stock if it's a product
+                      suffix: (_masterServiceProduct != null && _masterServiceProduct!.isProduct == true)
+                          ? Tooltip(
+                        message: 'Available Stock: ${_masterServiceProduct!.stock ?? 'N/A'}',
+                        child: Text(' (Stock: ${_masterServiceProduct!.stock ?? 'N/A'})',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                      )
+                          : null,
                     ),
                   ),
                 ),

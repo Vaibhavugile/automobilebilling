@@ -1,186 +1,185 @@
-// lib/screens/table_selection_screen.dart (Add button to AppBar)
+// lib/screens/table_selection_screen.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:motor_service_billing_app/screens/billing_screen.dart';
-import 'package:motor_service_billing_app/screens/payment_history_screen.dart';
-import 'package:motor_service_billing_app/screens/service_product_management_screen.dart';
-import 'package:motor_service_billing_app/screens/customer_list_screen.dart'; // NEW: Import CustomerListScreen
-import 'package:motor_service_billing_app/services/firestore_service.dart';
-import 'package:motor_service_billing_app/screens/custom_message_box.dart';
-import 'package:motor_service_billing_app/utils/extensions.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; // For DocumentSnapshot
+import '../services/firestore_service.dart';
+import 'billing_screen.dart';
+import 'payment_history_screen.dart';
+import 'service_product_management_screen.dart';
+import 'customer_list_screen.dart';
+import '../screens/custom_message_box.dart';
 
 class TableSelectionScreen extends StatefulWidget {
-  const TableSelectionScreen({super.key});
-
   @override
-  State<TableSelectionScreen> createState() => _TableSelectionScreenState();
+  _TableSelectionScreenState createState() => _TableSelectionScreenState();
 }
 
 class _TableSelectionScreenState extends State<TableSelectionScreen> {
-  final int _numberOfTables = 4; // Represents number of service bays/workstations
+  final FirestoreService _firestoreService = FirestoreService();
+  final List<String> _tableIds = List.generate(10, (index) => 'Table ${index + 1}'); // Example tables
 
   @override
   void initState() {
     super.initState();
-    _initializeAllTables();
+    // Initialize tables in Firestore if they don't exist
+    _tableIds.forEach((tableId) {
+      _firestoreService.initializeTable(tableId);
+    });
   }
 
-  Future<void> _initializeAllTables() async {
-    final firestoreService = Provider.of<FirestoreService>(context, listen: false);
-    for (int i = 1; i <= _numberOfTables; i++) {
-      await firestoreService.initializeTable('Table $i');
-    }
+  void _navigateToBillingScreen(String tableId) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => BillingScreen(tableId: tableId),
+      ),
+    );
+  }
+
+  void _navigateToPaymentHistory() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PaymentHistoryScreen(),
+      ),
+    );
+  }
+
+  void _navigateToServiceProductManagement() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ServiceProductManagementScreen(),
+      ),
+    );
+  }
+
+  void _navigateToCustomerList() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CustomerListScreen(),
+      ),
+    );
+  }
+
+  Future<void> _logout() async {
+    CustomMessageBox.showConfirmation(context, 'Are you sure you want to log out?',
+        onConfirm: () async {
+          try {
+            CustomMessageBox.showLoading(context, 'Logging out...');
+            await _firestoreService.signOut();
+            Navigator.pop(context); // Pop loading dialog
+            // Navigate back to login screen, remove all previous routes
+            Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+          } catch (e) {
+            Navigator.pop(context); // Pop loading dialog
+            CustomMessageBox.showError(context, 'Logout failed: $e');
+          }
+        });
   }
 
   @override
   Widget build(BuildContext context) {
-    final firestoreService = Provider.of<FirestoreService>(context);
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Select Service Bay'),
-        centerTitle: true,
+        title: Text('Table Selection'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.people), // NEW: Customer management button
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const CustomerListScreen()),
-              );
-            },
-            tooltip: 'Manage Customers',
+            icon: Icon(Icons.people),
+            onPressed: _navigateToCustomerList,
+            tooltip: 'Customer List',
           ),
           IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const PaymentHistoryScreen()),
-              );
-            },
-            tooltip: 'View Payment History',
+            icon: Icon(Icons.history),
+            onPressed: _navigateToPaymentHistory,
+            tooltip: 'Payment History',
           ),
           IconButton(
-            icon: const Icon(Icons.build),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const ServiceProductManagementScreen()),
-              );
-            },
-            tooltip: 'Manage Services/Products',
+            icon: Icon(Icons.manage_accounts),
+            onPressed: _navigateToServiceProductManagement,
+            tooltip: 'Service/Product Management',
+          ),
+          IconButton(
+            icon: Icon(Icons.logout),
+            onPressed: _logout,
+            tooltip: 'Logout',
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Select a Service Bay to Start/Continue Billing',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            Expanded(
-              child: StreamBuilder<List<Map<String, dynamic>>>(
-                stream: firestoreService.getTablesStream(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (snapshot.hasError) {
-                    return Center(child: Text('Error: ${snapshot.error}'));
-                  }
-                  final tables = snapshot.data ?? [];
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        stream: _firestoreService.getTablesStream(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData || snapshot.data!.isEmpty) {
+            return Center(child: Text('No tables found.'));
+          }
 
-                  return GridView.builder(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2, // 2 cards per row
-                      crossAxisSpacing: 20.0,
-                      mainAxisSpacing: 20.0,
-                      childAspectRatio: 1.0, // Make cards square
+          final tableStatuses = { for (var item in snapshot.data!) item['id'] : item['status'] };
+
+          return GridView.builder( // Line 71 is likely here, or within its direct children.
+            padding: const EdgeInsets.all(16.0),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 16.0,
+              mainAxisSpacing: 16.0,
+            ),
+            itemCount: _tableIds.length,
+            itemBuilder: (context, index) {
+              final tableId = _tableIds[index];
+              final status = tableStatuses[tableId] ?? 'empty'; // Default to empty if no status found
+
+              Color cardColor;
+              String statusText;
+              switch (status) {
+                case 'occupied':
+                  cardColor = Colors.orange.shade100;
+                  statusText = 'Occupied';
+                  break;
+                case 'billing':
+                  cardColor = Colors.red.shade100;
+                  statusText = 'Billing In Progress';
+                  break;
+                case 'empty':
+                default:
+                  cardColor = Colors.green.shade100;
+                  statusText = 'Empty';
+                  break;
+              }
+
+              return GestureDetector(
+                onTap: () => _navigateToBillingScreen(tableId),
+                child: Card(
+                  color: cardColor,
+                  elevation: 4,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          tableId,
+                          style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          statusText,
+                          style: TextStyle(fontSize: 16, color: Colors.black54),
+                        ),
+                      ],
                     ),
-                    itemCount: _numberOfTables,
-                    itemBuilder: (context, index) {
-                      final tableId = 'Table ${index + 1}';
-                      final tableData = tables.firstWhereOrNull((t) => t['id'] == tableId);
-
-                      String status = tableData?['status'] ?? 'empty';
-                      Color cardColor;
-                      Color textColor;
-
-                      if (status == 'occupied') {
-                        cardColor = Colors.orange.shade100;
-                        textColor = Colors.orange.shade800;
-                      } else if (status == 'completed') { // A bill completed but table not cleared
-                        cardColor = Colors.green.shade100;
-                        textColor = Colors.green.shade800;
-                      } else {
-                        cardColor = Colors.blue.shade50;
-                        textColor = Colors.blue.shade800;
-                      }
-
-                      // Check if there are service items in the bill to determine 'occupied' status
-                      final List<dynamic> serviceItems = tableData?['serviceItems'] ?? [];
-                      if (serviceItems.isNotEmpty) {
-                        status = 'occupied';
-                        cardColor = Colors.orange.shade100;
-                        textColor = Colors.orange.shade800;
-                      } else {
-                        status = 'empty';
-                        cardColor = Colors.blue.shade50;
-                        textColor = Colors.blue.shade800;
-                      }
-
-
-                      return Card(
-                        color: cardColor,
-                        elevation: 8,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15.0),
-                          side: BorderSide(
-                            color: textColor.withOpacity(0.5),
-                            width: 2,
-                          ),
-                        ),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => BillingScreen(tableId: tableId),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(15.0),
-                          child: Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Center(
-                              child: Text(
-                                'Service ${index + 1}\n\n'
-                                    '(${status == 'occupied' ? 'Occupied' : 'Empty'})',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.bold,
-                                  color: textColor,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }
